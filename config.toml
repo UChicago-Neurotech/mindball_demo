@@ -1,0 +1,15 @@
+[players]
+# Pin each side to a headset by its LSL stream name (shown in the monitor and by
+# `python -m mindball.list_streams`), e.g. "X.on-102801-0065".
+# Leave empty to auto-assign the first two headsets found (sorted by name).
+left = ""
+right = ""
+
+[streams]
+# Only EEG streams whose name starts with this are used. Simulated headsets are "X.on-SIM-*".
+prefix = "X.on"
+
+[signal]
+# Channels averaged for the relaxation score. Parietal alpha is strongest; F3/F4 pick up blinks.
+score_channels = ["P3", "P4", "Cz"]
+window_seconds = 2.0

@@ -1,0 +1,6 @@
+pylsl>=1.16
+numpy
+scipy
+pygame-ce>=2.5
+pyxdf
+pytest
