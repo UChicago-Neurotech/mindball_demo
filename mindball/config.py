@@ -11,6 +11,7 @@ DEFAULTS = {
     "players": {"left": "", "right": ""},
     "streams": {"prefix": "X.on"},
     "signal": {"score_channels": ["P3", "P4", "Cz"], "window_seconds": 2.0},
+    "game": {"base_speed": 0.06, "ramp_seconds": 10.0, "inertia": 2.5, "contrast": 0.3, "smoothing_seconds": 2.0},
 }
 
 

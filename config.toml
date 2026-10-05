@@ -13,3 +13,11 @@ prefix = "X.on"
 # Channels averaged for the relaxation score. Parietal alpha is strongest; F3/F4 pick up blinks.
 score_channels = ["P3", "P4", "Cz"]
 window_seconds = 2.0
+
+[game]
+# Clear win ~15 s, dead-even match ~30 s. Too long? raise base_speed. Too short? lower it.
+base_speed = 0.06     # ball speed at full advantage at the start (centre-to-goal per second)
+ramp_seconds = 10.0   # speed doubles after this long, keeps growing ~t^2 so every game ends
+inertia = 2.5        # momentum: how long the ball keeps rolling after the lead changes (s)
+contrast = 0.3        # how big an alpha difference counts as "much more relaxed" (log ratio)
+smoothing_seconds = 2.0

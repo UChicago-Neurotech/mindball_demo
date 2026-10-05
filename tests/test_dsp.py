@@ -39,3 +39,18 @@ def test_synthetic_relaxed_player_has_more_alpha():
     sim.relax = 0.0
     tense = sim.chunk(int(FS * 2))[:, 5:7]
     assert dsp.relative_alpha(relaxed, FS).mean() > dsp.relative_alpha(tense, FS).mean()
+
+
+def test_live_filter_notches_60hz_and_keeps_alpha():
+    t = np.arange(int(FS * 10)) / FS
+    f = dsp.LiveFilter(FS)
+    y = f(np.column_stack([np.sin(2 * np.pi * 10 * t), np.sin(2 * np.pi * 60 * t)]))[int(FS * 2):]
+    assert y[:, 0].std() > 0.6 and y[:, 1].std() < 0.05
+
+
+def test_live_filter_chunked_matches_one_shot():
+    x = noise(seconds=4.0)
+    whole = dsp.LiveFilter(FS)(x)
+    f = dsp.LiveFilter(FS)
+    chunks = np.vstack([f(x[i:i + 37]) for i in range(0, len(x), 37)])
+    assert np.allclose(whole, chunks)

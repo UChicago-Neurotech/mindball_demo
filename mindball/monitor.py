@@ -9,67 +9,19 @@ Keys: S swap sides · +/- trace scale · F fullscreen · Esc quit
 from __future__ import annotations
 
 import argparse
-from collections import deque
-
 import numpy as np
 import pygame
 import pylsl
 
-from . import config, dsp
+from . import config, ui
+from .player import PlayerSignal
 from .streams import Headset, HeadsetManager
+from .ui import BG, GRID, PANEL, QUALITY, SIDE, STATUS, SUBTEXT, TEXT, Fonts, draw_traces
 
 TRACE_SECONDS = 5.0
 HISTORY_SECONDS = 30.0
-HISTORY_HOP = 0.25
 EMA_TAU = 1.0
 ALPHA_BAR_MAX = 0.5
-
-BG = (11, 15, 23)
-PANEL = (18, 24, 38)
-GRID = (32, 40, 58)
-TEXT = (232, 237, 245)
-SUBTEXT = (138, 150, 168)
-QUALITY = {"good": (62, 207, 142), "warn": (245, 165, 36), "bad": (240, 79, 95)}
-STATUS = {"OK": QUALITY["good"], "SLOW": QUALITY["warn"], "CONNECTING": QUALITY["warn"], "NO DATA": QUALITY["bad"]}
-SIDE = [("LEFT", (76, 201, 240)), ("RIGHT", (247, 37, 133))]
-
-
-class PlayerView:
-    """Per-headset display state (kept by stream name so swapping sides keeps history)."""
-
-    def __init__(self, headset: Headset):
-        self.filter = dsp.DisplayFilter(headset.srate)
-        self.alpha = None
-        self.history: deque[float] = deque(maxlen=int(HISTORY_SECONDS / HISTORY_HOP))
-        self.next_hist = 0.0
-        self.quality: list[tuple[str, str]] = []
-        self.moving = 0.0
-
-
-def update_view(view: PlayerView, headset: Headset, cfg: dict, dt: float) -> None:
-    window = cfg["signal"]["window_seconds"]
-    if not headset.has(window) or headset.status == "NO DATA":
-        return
-    eeg, _ = headset.latest(window, headset.eeg_labels)
-    view.quality = dsp.channel_quality(eeg, headset.srate)
-    if headset.acc_idx:
-        acc, _ = headset.latest(1.0)
-        view.moving = dsp.movement(acc[:, headset.acc_idx])
-
-    usable = [
-        i
-        for i, label in enumerate(headset.eeg_labels)
-        if label in cfg["signal"]["score_channels"] and view.quality[i][0] != "bad"
-    ]
-    if not usable:
-        return
-    rel = float(dsp.relative_alpha(eeg[:, usable], headset.srate).mean())
-    k = 1.0 - np.exp(-dt / EMA_TAU)
-    view.alpha = rel if view.alpha is None else view.alpha + k * (rel - view.alpha)
-    now = pylsl.local_clock()
-    if now >= view.next_hist:
-        view.history.append(view.alpha)
-        view.next_hist = now + HISTORY_HOP
 
 
 class Monitor:
@@ -78,18 +30,15 @@ class Monitor:
         pygame.display.set_caption("Mindball — signal check")
         flags = pygame.FULLSCREEN if fullscreen else pygame.RESIZABLE
         self.screen = pygame.display.set_mode((1280, 720), flags)
-        self.font = {size: pygame.font.Font(None, size) for size in (18, 22, 28, 40)}
+        self.fonts = Fonts()
         self.cfg = cfg
         self.manager = HeadsetManager(cfg["streams"]["prefix"], cfg["players"]["left"], cfg["players"]["right"])
-        self.views: dict[str, PlayerView] = {}
+        self.views: dict[str, PlayerSignal] = {}
         self.scale_uv = 50.0  # half-height of each trace row in uV
         self.last_log = 0.0
 
     def text(self, s: str, size: int, color, pos, anchor: str = "topleft") -> pygame.Rect:
-        surf = self.font[size].render(s, True, color)
-        rect = surf.get_rect(**{anchor: pos})
-        self.screen.blit(surf, rect)
-        return rect
+        return ui.text(self.screen, self.fonts(size), s, color, pos, anchor)
 
     def run(self, seconds: float | None = None, screenshot: str | None = None) -> None:
         clock = pygame.time.Clock()
@@ -114,8 +63,9 @@ class Monitor:
 
             self.manager.update()
             for headset in self.manager.headsets.values():
-                view = self.views.setdefault(headset.name, PlayerView(headset))
-                update_view(view, headset, self.cfg, dt)
+                if headset.name not in self.views:
+                    self.views[headset.name] = PlayerSignal(headset, EMA_TAU, HISTORY_SECONDS)
+                self.views[headset.name].update(headset, self.cfg, dt)
             self.draw()
             pygame.display.flip()
             self.log()
@@ -144,6 +94,7 @@ class Monitor:
 
     def draw(self) -> None:
         w, h = self.screen.get_size()
+        self.fonts.set_height(h)
         self.screen.fill(BG)
         self.text("MINDBALL", 40, TEXT, (24, 14))
         self.text("signal check", 28, SUBTEXT, (190, 22))
@@ -192,27 +143,11 @@ class Monitor:
         # --- traces
         traces = pygame.Rect(rect.x + 12, rect.y + 64, rect.w - 24, int(rect.h * 0.58))
         labels = headset.eeg_labels
-        row_h = traces.h / max(1, len(labels))
         data = None
         if headset.has(0.5):
-            raw, _ = headset.latest(TRACE_SECONDS, labels)
-            data = view.filter(raw.astype(np.float64))
-        plot_x, plot_w = traces.x + 70, traces.w - 70
-        for r, label in enumerate(labels):
-            cy = traces.y + row_h * (r + 0.5)
-            pygame.draw.line(self.screen, GRID, (plot_x, cy), (plot_x + plot_w, cy))
-            level, reason = view.quality[r] if r < len(view.quality) else ("warn", "")
-            pygame.draw.circle(self.screen, QUALITY[level], (traces.x + 8, int(cy)), 6)
-            self.text(label, 22, TEXT, (traces.x + 22, cy), "midleft")
-            if reason:
-                self.text(reason, 18, QUALITY[level], (plot_x + plot_w, cy - row_h / 2 + 2), "topright")
-            if data is not None and len(data) > 1:
-                n_full = int(TRACE_SECONDS * headset.srate)
-                step = max(1, n_full // plot_w)
-                ys = data[::step, r]
-                xs = plot_x + plot_w * (np.arange(len(ys)) * step + (n_full - len(data))) / n_full
-                ys = np.clip(cy - ys / self.scale_uv * (row_h / 2), cy - row_h / 2, cy + row_h / 2)
-                pygame.draw.lines(self.screen, accent, False, np.column_stack([xs, ys]).tolist(), 1)
+            data, _ = headset.latest(TRACE_SECONDS, labels, filtered=True)
+        n_full = int(TRACE_SECONDS * headset.srate)
+        draw_traces(self.screen, traces, data, labels, view.quality, accent, self.scale_uv, n_full, self.fonts)
 
         # --- relative alpha
         ay = traces.bottom + 18
@@ -238,7 +173,7 @@ class Monitor:
             pygame.draw.lines(self.screen, accent, False, np.column_stack([xs, ys]).tolist(), 2)
         self.text(f"last {HISTORY_SECONDS:.0f} s", 18, SUBTEXT, (hist.x + 6, hist.y + 4))
 
-        moving = view.moving > dsp.MOVING_MG
+        moving = view.is_moving
         self.text(
             "HEAD MOVING" if moving else "head still",
             22, QUALITY["warn"] if moving else SUBTEXT, (x, rect.bottom - 26),

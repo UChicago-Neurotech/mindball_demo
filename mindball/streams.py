@@ -4,6 +4,9 @@ Each headset is one LSL stream named like ``X.on-102801-0065`` (11 float32 chann
 250 Hz: F3 F4 C3 Cz C4 P3 P4 BIP accX accY accZ). Inlets are opened with clock sync +
 dejitter, so every timestamp is on this machine's LSL clock no matter whether the stream
 comes from the X.on PC app or a phone on the network.
+
+EEG channels are also filtered live (1-40 Hz bandpass + 60 Hz notch) as samples arrive;
+``latest(..., filtered=True)`` returns that copy.
 """
 
 from __future__ import annotations
@@ -12,6 +15,8 @@ from collections import deque
 
 import numpy as np
 import pylsl
+
+from .dsp import LiveFilter
 
 EEG_LABELS = ("F3", "F4", "C3", "Cz", "C4", "P3", "P4")
 X_ON_LABELS = EEG_LABELS + ("BIP", "accX", "accY", "accZ")
@@ -54,9 +59,12 @@ class Headset:
         self.index = {label: i for i, label in enumerate(self.labels)}
         self.eeg_labels = [label for label in EEG_LABELS if label in self.index]
         self.acc_idx = [self.index[a] for a in ("accX", "accY", "accZ") if a in self.index]
+        self.eeg_idx = [self.index[label] for label in self.eeg_labels]
+        self.filter = LiveFilter(self.srate)
 
         n = int(buffer_s * self.srate)
         self.buf = np.zeros((n, len(self.labels)), dtype=np.float32)
+        self.fbuf = np.zeros((n, len(self.eeg_idx)), dtype=np.float32)  # filtered EEG
         self.ts = np.zeros(n)
         self.count = 0
         self.last_arrival = pylsl.local_clock()  # count silence from when we opened it
@@ -80,19 +88,27 @@ class Headset:
         return total
 
     def _append(self, data: np.ndarray, stamps: np.ndarray) -> None:
+        filtered = self.filter(data[:, self.eeg_idx].astype(np.float64)) if self.eeg_idx else data[:, :0]
         size = len(self.buf)
         if len(data) > size:
             self.count += len(data) - size
-            data, stamps = data[-size:], stamps[-size:]
+            data, filtered, stamps = data[-size:], filtered[-size:], stamps[-size:]
         idx = np.arange(self.count, self.count + len(data)) % size
         self.buf[idx] = data
+        self.fbuf[idx] = filtered
         self.ts[idx] = stamps
         self.count += len(data)
 
-    def latest(self, seconds: float, labels: list[str] | None = None):
-        """Most recent `seconds` of data, oldest first: (samples x channels, timestamps)."""
+    def latest(self, seconds: float, labels: list[str] | None = None, filtered: bool = False):
+        """Most recent `seconds` of data, oldest first: (samples x channels, timestamps).
+
+        filtered=True returns the live-filtered EEG (EEG labels only; default all of them).
+        """
         n = min(int(seconds * self.srate), self.count, len(self.buf))
         idx = np.arange(self.count - n, self.count) % len(self.buf)
+        if filtered:
+            cols = [self.eeg_labels.index(label) for label in labels] if labels else slice(None)
+            return self.fbuf[idx][:, cols], self.ts[idx]
         cols = [self.index[label] for label in labels] if labels else slice(None)
         return self.buf[idx][:, cols], self.ts[idx]
 

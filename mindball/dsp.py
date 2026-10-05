@@ -1,4 +1,4 @@
-"""Signal processing: band power, relative alpha, channel quality, movement.
+"""Signal processing: live filter, band power, relative alpha, channel quality, movement.
 
 All inputs are (samples x channels) arrays in microvolts. Thresholds were picked from
 last year's X.on recording (seated participant, saline sponges): per-channel SD over 2 s
@@ -10,7 +10,7 @@ in 15.6 mg steps).
 from __future__ import annotations
 
 import numpy as np
-from scipy.signal import butter, iirnotch, sosfiltfilt, tf2sos, welch
+from scipy.signal import butter, iirnotch, sosfilt, sosfilt_zi, tf2sos, welch
 
 ALPHA = (8.0, 13.0)
 TOTAL = (2.0, 40.0)
@@ -67,18 +67,22 @@ def movement(acc: np.ndarray) -> float:
     return float(np.linalg.norm(acc, axis=1).std())
 
 
-class DisplayFilter:
-    """1-40 Hz bandpass + 60 Hz notch for drawing traces (zero-phase, display only)."""
+class LiveFilter:
+    """Causal 1-40 Hz bandpass + 60 Hz notch that carries its state across chunks.
 
-    def __init__(self, fs: float):
-        self.sos = np.vstack(
-            [
-                butter(4, [1.0, 40.0], btype="band", fs=fs, output="sos"),
-                tf2sos(*iirnotch(60.0, 30.0, fs=fs)),
-            ]
-        )
+    Feed it samples in arrival order (any chunk size); the output is the same as filtering
+    the whole recording in one go.
+    """
+
+    def __init__(self, fs: float, band_hz: tuple[float, float] = (1.0, 40.0), notch_hz: float = 60.0):
+        sections = [butter(4, band_hz, btype="band", fs=fs, output="sos")]
+        if fs > 2.2 * notch_hz:
+            sections.append(tf2sos(*iirnotch(notch_hz, 30.0, fs=fs)))
+        self.sos = np.vstack(sections)
+        self.zi: np.ndarray | None = None
 
     def __call__(self, x: np.ndarray) -> np.ndarray:
-        if len(x) < 64:
-            return x - x.mean(axis=0)
-        return sosfiltfilt(self.sos, x - x.mean(axis=0), axis=0)
+        if self.zi is None:  # start in steady state for the first sample (no DC-step ringing)
+            self.zi = sosfilt_zi(self.sos)[:, :, None] * x[0][None, None, :]
+        y, self.zi = sosfilt(self.sos, x, axis=0, zi=self.zi)
+        return y
